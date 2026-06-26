@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; margin: 40px; color: #333; }
+  h1 { color: #1a1a2e; margin-bottom: 0; }
+  .meta { color: #666; margin-bottom: 30px; }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  th { background: #1a1a2e; color: white; padding: 10px; text-align: left; }
+  td { padding: 10px; border-bottom: 1px solid #eee; }
+  .total { font-size: 1.2em; font-weight: bold; text-align: right; margin-top: 20px; }
+  .notes { margin-top: 30px; padding: 15px; background: #f8f9fa; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>{{ company }}</h1>
+  <p class="meta">Invoice {{ invoice_number }}</p>
+  <p><strong>Bill to:</strong> {{ recipient }}</p>
+
+  <table>
+    <thead>
+      <tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Amount</th></tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td>{{ item.description }}</td>
+        <td>{{ item.quantity }}</td>
+        <td>${{ "%.2f"|format(item.unit_price) }}</td>
+        <td>${{ "%.2f"|format(item.quantity * item.unit_price) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="total">Total: ${{ "%.2f"|format(total) }}</p>
+
+  {% if notes %}
+  <div class="notes"><strong>Notes:</strong> {{ notes }}</div>
+  {% endif %}
+</body>
+</html>
