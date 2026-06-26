@@ -49,12 +49,97 @@ Deploy any web app to an AWS Lambda MicroVM with public access via CloudFront. O
 └── TROUBLESHOOTING.md       # Every gotcha and fix
 ```
 
+## Example apps
+
+### playground — Interactive notebook (public)
+
+A [marimo](https://marimo.io) reactive Python notebook running inside a MicroVM. Demonstrates interactive data visualization, fleet cost modeling, and system introspection. Deploy as public; users interact via browser.
+
+```bash
+./deploy.sh apps/playground
+# Opens at https://xxx.cloudfront.net/
+```
+
+**Use case:** Data exploration, demos, interactive documentation, personal dev environments.
+
+### code-runner — Sandboxed code execution (private)
+
+A FastAPI service that executes arbitrary Python in isolation. Each request runs in the same VM but subprocess-isolated. Intended as a backend service called by your application (AI coding assistants, CI systems, educational platforms).
+
+```bash
+./deploy.sh apps/code-runner --private
+./apps/code-runner/example-client.sh
+```
+
+**API:**
+- `POST /run` — `{"code": "print(1+1)", "timeout": 5}` → `{"stdout": "2\n", "exit_code": 0, "duration_ms": 12}`
+- `GET /health` — health check
+
+**Use case:** AI agent tool execution, automated testing, REPL backends, code evaluation in LMS platforms.
+
+### pdf-generator — Document generation (private)
+
+A FastAPI service that converts HTML to PDF using WeasyPrint. Includes an invoice template with Jinja2. Deploy as a backend service your app calls when it needs to generate documents.
+
+```bash
+./deploy.sh apps/pdf-generator --private
+./apps/pdf-generator/example-client.sh
+```
+
+**API:**
+- `POST /generate` — `{"html": "<h1>Hello</h1>"}` → PDF binary
+- `POST /invoice` — `{"company": "...", "items": [...]}` → formatted invoice PDF
+
+**Use case:** Invoice generation, report rendering, certificate creation, any HTML-to-PDF pipeline.
+
+### shape-agent — Governed AI agent (private)
+
+A FastAPI service demonstrating [Shape](https://github.com/vidanov/shape) governance for AI agents. The agent has tools (lookup, analyze, send email, run code) controlled by lifecycle phases (explore → decide → commit), budget limits, and time constraints.
+
+```bash
+./deploy.sh apps/shape-agent --private
+./apps/shape-agent/example-client.sh
+```
+
+**API:**
+- `POST /agent/explore` — call READ tools (writes blocked)
+- `POST /agent/decide` — evaluate options (writes blocked)
+- `POST /agent/commit` — execute actions (writes allowed, budget-gated)
+- `GET /agent/status` — budget, time, audit trail
+- `POST /agent/reset` — reset agent state
+
+**Governance rules:**
+- READ tools allowed in any phase
+- WRITE/IRREVERSIBLE tools blocked outside COMMIT
+- Irreversible tools blocked above 75% budget
+- All tools blocked above 90% budget or time limit
+
+**Use case:** Multi-tenant AI agent platforms where each user gets an isolated MicroVM with governed tool access. MicroVMs provide the isolation boundary, Shape controls what happens inside.
+
+## Two deployment modes
+
+### Public (`./deploy.sh apps/name`)
+
+Creates CloudFront + Lambda@Edge in front of the MicroVM. Anyone with the URL can access it. Best for:
+- Interactive UIs (notebooks, dashboards)
+- Demos and showcases
+- Internal tools without VPN
+
+### Private (`./deploy.sh apps/name --private`)
+
+Creates only the MicroVM. Access requires an auth token minted via AWS CLI/SDK. Best for:
+- Backend APIs called by your application
+- Code execution sandboxes
+- Services processing sensitive data
+- Multi-tenant platforms where your backend manages user→MicroVM routing
+
 ## How apps work
 
 Each app is a folder with:
 - `Dockerfile` — builds on `public.ecr.aws/lambda/microvms:al2023-minimal`
 - Your application code (Python, Node, Go, whatever runs in a container)
 - Optional `requirements.txt` for Python apps
+- Optional `example-client.sh` for private apps (demonstrates the API)
 
 The Dockerfile must `EXPOSE` a port. The deploy script auto-detects it.
 
@@ -106,6 +191,21 @@ Browser → CloudFront (caches static assets, passes WebSocket)
          MicroVM endpoint (Firecracker VM, your app)
 ```
 
+For private deployments, your backend calls the MicroVM directly with auth tokens (no CloudFront layer).
+
+## VPC connectivity
+
+MicroVMs can access private VPC resources through Lambda Network Connectors. The MicroVM does NOT run inside your VPC (same model as Lambda functions). It connects through managed ENIs:
+
+```bash
+aws lambda-microvms run-microvm \
+  --image-identifier ... \
+  --egress-network-connectors '["arn:aws:lambda:REGION:ACCT:network-connector:my-vpc-connector"]' \
+  ...
+```
+
+Default is `INTERNET_EGRESS` (public internet). With a VPC connector, outbound goes through your subnets.
+
 ## Costs (eu-west-1, Graviton)
 
 | Usage pattern | 2 vCPU / 4 GB | 4 vCPU / 8 GB |
@@ -114,6 +214,8 @@ Browser → CloudFront (caches static assets, passes WebSocket)
 | 4 hours/day, 20 days | ~$11/mo | ~$22/mo |
 | Bursty (auto-suspend) | Pay only active seconds | + $0 when suspended |
 | CloudFront + Edge | ~$0-1/mo | ~$0-1/mo |
+
+MicroVMs are cost-effective for bursty workloads (<4-5 hrs/day active). For always-on, EC2 is 3-5x cheaper.
 
 ## Preparing for IaC (CDK/CloudFormation)
 
