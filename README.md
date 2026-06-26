@@ -20,14 +20,17 @@ Deploy any web app to an AWS Lambda MicroVM with public access via CloudFront. O
 # Prerequisites: AWS CLI 2.35.10+, authenticated session
 # Supported regions: us-east-1, us-east-2, us-west-2, eu-west-1, ap-northeast-1
 
-# Deploy the interactive playground
+# Deploy public (browser-accessible via CloudFront)
 ./deploy.sh apps/playground
 
-# Deploy the code runner
-./deploy.sh apps/code-runner
+# Deploy private (backend API, auth token required)
+./deploy.sh apps/code-runner --private
+./deploy.sh apps/pdf-generator --private
+./deploy.sh apps/shape-agent --private
 
-# Deploy with a custom name
-./deploy.sh apps/pdf-generator my-pdf-service
+# After private deploy, test with the example client:
+./apps/code-runner/example-client.sh
+./apps/shape-agent/example-client.sh
 ```
 
 ## Project structure

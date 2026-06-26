@@ -1,15 +1,26 @@
 #!/bin/bash
-# deploy.sh — Deploy any app to a Lambda MicroVM with public CloudFront access
+# deploy.sh — Deploy any app to a Lambda MicroVM
 #
-# Usage: ./deploy.sh <app-folder> [image-name]
-# Example: ./deploy.sh apps/playground
-#          ./deploy.sh apps/code-runner my-code-service
+# Usage: ./deploy.sh <app-folder> [image-name] [--private]
+# Example: ./deploy.sh apps/playground              # Public via CloudFront
+#          ./deploy.sh apps/code-runner --private   # Backend only (no CloudFront)
+#          ./deploy.sh apps/pdf-generator my-pdf --private
 #
 # Prerequisites: AWS CLI 2.35.10+, authenticated session
 
 set -e
 
-APP_DIR="${1:?Usage: ./deploy.sh <app-folder> [image-name]}"
+# Parse args
+PUBLIC=true
+POSITIONAL=()
+for arg in "$@"; do
+  case $arg in
+    --private) PUBLIC=false ;;
+    *) POSITIONAL+=("$arg") ;;
+  esac
+done
+
+APP_DIR="${POSITIONAL[0]:?Usage: ./deploy.sh <app-folder> [image-name] [--private]}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${SCRIPT_DIR}/${APP_DIR}"
 
@@ -20,10 +31,13 @@ fi
 
 REGION="eu-west-1"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-IMAGE_NAME="${2:-$(basename ${APP_DIR})}"
+IMAGE_NAME="${POSITIONAL[1]:-$(basename ${APP_DIR})}"
 BUCKET="microvm-artifacts-${ACCOUNT_ID}-${REGION}"
 APP_PORT=$(grep -m1 "^EXPOSE" "${APP_DIR}/Dockerfile" | awk '{print $2}')
 APP_PORT="${APP_PORT:-8080}"
+
+MODE="public (CloudFront)"
+[ "$PUBLIC" = false ] && MODE="private (backend only)"
 
 echo "╔══════════════════════════════════════╗"
 echo "║   Lambda MicroVM Deploy             ║"
@@ -32,8 +46,8 @@ echo ""
 echo "  App:     $(basename ${APP_DIR})"
 echo "  Image:   ${IMAGE_NAME}"
 echo "  Port:    ${APP_PORT}"
+echo "  Mode:    ${MODE}"
 echo "  Region:  ${REGION}"
-echo "  Account: ${ACCOUNT_ID}"
 echo ""
 
 # --- Step 1: S3 Bucket ---
@@ -126,7 +140,8 @@ while true; do
 done
 echo "  Running: ${MICROVM_ID}"
 
-# --- Step 6: Lambda@Edge ---
+# --- Step 6: Lambda@Edge (public mode only) ---
+if [ "$PUBLIC" = true ]; then
 echo "[6/7] Deploying Lambda@Edge..."
 EDGE_DIR=$(mktemp -d)
 cat > ${EDGE_DIR}/lambda_function.py << PYEOF
@@ -206,11 +221,13 @@ while true; do
   [ "$STATUS" = "Deployed" ] && break
   sleep 20
 done
+fi  # end PUBLIC steps 6-7
 
 # --- Output ---
+if [ "$PUBLIC" = true ]; then
 echo ""
 echo "╔══════════════════════════════════════════════════╗"
-echo "║   DEPLOYED SUCCESSFULLY                         ║"
+echo "║   DEPLOYED SUCCESSFULLY (public)                ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 echo "  🌐 URL:          https://${CF_DOMAIN}/"
@@ -233,6 +250,43 @@ cat > "${SCRIPT_DIR}/deploy-output-${IMAGE_NAME}.json" << EOF
   "cloudfrontDomain": "${CF_DOMAIN}",
   "edgeArn": "${EDGE_ARN}",
   "port": "${APP_PORT}",
-  "region": "${REGION}"
+  "region": "${REGION}",
+  "mode": "public"
 }
 EOF
+
+else
+# Private mode - no CloudFront
+echo ""
+echo "╔══════════════════════════════════════════════════╗"
+echo "║   DEPLOYED SUCCESSFULLY (private)               ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
+echo "  🖥️  MicroVM:      ${MICROVM_ID}"
+echo "  📦 Image:        ${IMAGE_NAME}"
+echo "  🔒 Endpoint:     ${ENDPOINT}"
+echo "  🔌 Port:         ${APP_PORT}"
+echo ""
+echo "  Access requires an auth token:"
+echo "  TOKEN=\$(aws lambda-microvms create-microvm-auth-token \\"
+echo "    --microvm-identifier ${MICROVM_ID} \\"
+echo "    --expiration-in-minutes 60 \\"
+echo "    --allowed-ports '[{\"port\":${APP_PORT}}]' \\"
+echo "    --region ${REGION} --query 'authToken.\"X-aws-proxy-auth\"' --output text)"
+echo ""
+echo "  curl https://${ENDPOINT}/ -H \"X-aws-proxy-auth: \$TOKEN\" -H \"X-aws-proxy-port: ${APP_PORT}\""
+echo ""
+echo "  Terminate:  ./destroy.sh ${IMAGE_NAME}"
+echo ""
+
+cat > "${SCRIPT_DIR}/deploy-output-${IMAGE_NAME}.json" << EOF
+{
+  "microvmId": "${MICROVM_ID}",
+  "endpoint": "${ENDPOINT}",
+  "imageName": "${IMAGE_NAME}",
+  "port": "${APP_PORT}",
+  "region": "${REGION}",
+  "mode": "private"
+}
+EOF
+fi
