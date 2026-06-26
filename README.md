@@ -217,6 +217,41 @@ Default is `INTERNET_EGRESS` (public internet). With a VPC connector, outbound g
 
 MicroVMs are cost-effective for bursty workloads (<4-5 hrs/day active). For always-on, EC2 is 3-5x cheaper.
 
+## When to use MicroVMs vs Lambda functions
+
+Not every workload needs a MicroVM. Use this decision guide:
+
+| Signal | Use MicroVM | Use Lambda function |
+|--------|-------------|---------------------|
+| Needs state between requests | ✓ | |
+| Runs untrusted/user code | ✓ | |
+| Long-running (>15 min) | ✓ | |
+| WebSocket / persistent connection | ✓ | |
+| Needs full OS (FUSE, eBPF, Docker) | ✓ | |
+| High-volume, stateless | | ✓ |
+| Event-driven (S3, SQS, etc.) | | ✓ |
+| Sub-second billing granularity | | ✓ |
+| Auto-scales to thousands | | ✓ |
+
+The `pdf-generator` example works as a MicroVM demo, but for production PDF generation at scale, a Lambda function with a WeasyPrint/Chromium layer is cheaper and simpler (auto-scales, no VM lifecycle to manage). The MicroVM version makes sense when you need persistent template caches, heavy dependencies that exceed Lambda layer limits, or rendering jobs longer than 15 minutes.
+
+## Future app ideas (contributions welcome)
+
+These are use cases where MicroVMs have a clear advantage over Lambda functions:
+
+| App | Why MicroVM fits | Complexity |
+|-----|-----------------|------------|
+| **jupyter-workspace** | Per-user Jupyter notebook with pip install, persistent filesystem | Medium |
+| **playwright-runner** | Browser testing with pre-loaded Chromium (snapshot = no 10s startup) | Medium |
+| **llm-sandbox** | Run local LLMs (Ollama/llama.cpp) in isolation per tenant | High |
+| **game-server** | Stateful multiplayer sessions (WebSocket, 8hr lifetime) | Medium |
+| **dev-environment** | Full VS Code Server/Theia per developer, suspend overnight | High |
+| **ci-runner** | Isolated build environments with Docker-in-Docker | Medium |
+| **vulnerability-scanner** | Run untrusted security tools against customer code | Low |
+| **training-sandbox** | Workshop/training environments that reset per session | Low |
+
+The pattern: if it needs **isolation + state + long runtime**, it's a MicroVM workload. If it's **stateless + short + high-volume**, Lambda functions win.
+
 ## Preparing for IaC (CDK/CloudFormation)
 
 Lambda MicroVMs launched June 22, 2026 with API-only support. CloudFormation resource types are expected soon. The `infra/cdk/` directory contains a placeholder stack that manages everything except the MicroVM-specific calls (which use a Custom Resource wrapper). When native CFN support ships, swap the Custom Resource for the native construct.
