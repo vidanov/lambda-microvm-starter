@@ -15,7 +15,7 @@ if [ ! -f "$OUTPUT_FILE" ]; then
   CF_ID=""
 else
   MICROVM_ID=$(python3 -c "import json; print(json.load(open('${OUTPUT_FILE}'))['microvmId'])")
-  CF_ID=$(python3 -c "import json; print(json.load(open('${OUTPUT_FILE}'))['cloudfrontId'])")
+  CF_ID=$(python3 -c "import json; print(json.load(open('${OUTPUT_FILE}')).get('cloudfrontId',''))")
 fi
 
 echo "Destroying: ${IMAGE_NAME}"
