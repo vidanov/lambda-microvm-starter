@@ -143,13 +143,95 @@ botocore.auth.SigV4Auth(credentials, "lambda", REGION).add_auth(request)
 
 Service name for signing is `lambda` (not `lambda-microvms`). API path prefix is `/2025-09-09/`.
 
-## 13. No CDK/CloudFormation support
+## 13. CDK orchestrator: "No module named 'cfnresponse'"
 
-**Symptom**: No `AWS::Lambda::MicrovmImage` resource type exists.
+**Symptom**: Custom resource Lambda crashes at init. CloudFormation hangs for up to 1 hour waiting for response.
 
-**Cause**: Service launched June 22, 2026. CloudFormation support typically follows weeks later.
+**Cause**: `cfnresponse` is only auto-injected for Lambda functions using inline `ZipFile` code in CloudFormation templates. CDK deploys via `Code.from_asset()` (S3), so it's not available.
 
-**Fix**: Use CLI/SDK directly. Use CDK for supporting resources (S3, IAM, CloudFront) and CLI for MicroVM-specific calls.
+**Fix**: Bundle a local `cfnresponse.py` in the orchestrator directory. Already included in this repo.
+
+## 14. CDK orchestrator: "Unknown service: 'lambda-microvms'"
+
+**Symptom**: `botocore.exceptions.UnknownServiceError`
+
+**Cause**: The Lambda runtime's boto3 doesn't have the `lambda-microvms` service model. Even pip-installed boto3 doesn't have it yet — it's only in the AWS CLI 2.35.10+ botocore distribution.
+
+**Fix**: Run `./orchestrator/build.sh` before `cdk deploy`. It installs boto3 and copies the service model from the AWS CLI's botocore data directory.
+
+## 15. CDK orchestrator: AccessDeniedException on RunMicrovm
+
+**Symptom**: `AccessDeniedException when calling the RunMicrovm operation`
+
+**Cause**: IAM uses the `lambda:` namespace for MicroVM actions, not `lambda-microvms:`. The signing name in the service model is `lambda`.
+
+**Fix**: Grant `lambda:RunMicrovm`, `lambda:GetMicrovm`, `lambda:TerminateMicrovm` (or `lambda:*` during development). The CDK stack in this repo uses `lambda:*` for simplicity.
+
+## 16. CDK orchestrator: "Response object is too long"
+
+**Symptom**: Custom resource fails with "Response object is too long"
+
+**Cause**: CloudFormation custom resource responses have a 4096-byte limit. If the Lambda crashes and the error message (e.g., the full list of valid boto3 services) is passed to cfnresponse, it exceeds this limit.
+
+**Fix**: Truncate error messages before sending to cfnresponse:
+```python
+except Exception as e:
+    msg = str(e)[:200]
+    cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": msg})
+```
+
+## 17. CDK orchestrator: ResourceConflictException on PublishVersion
+
+**Symptom**: `An update is in progress for resource` when calling PublishVersion
+
+**Cause**: `UpdateFunctionCode` is async. Calling `PublishVersion` immediately after races with the update.
+
+**Fix**: Wait for `LastUpdateStatus == Successful` before publishing:
+```python
+for _ in range(30):
+    time.sleep(3)
+    status = client.get_function_configuration(FunctionName=fn)
+    if status.get("LastUpdateStatus", "Successful") == "Successful":
+        break
+client.publish_version(FunctionName=fn)
+```
+
+## 18. CDK: Lambda@Edge must be in us-east-1
+
+**Symptom**: `The function must be in region 'us-east-1'` when creating CloudFront distribution
+
+**Cause**: CloudFront Lambda@Edge functions can only be associated from us-east-1.
+
+**Fix**: The orchestrator Lambda creates the edge function directly in us-east-1 using `boto3.client("lambda", region_name="us-east-1")`. The CDK stack does not create the edge function itself — the custom resource handles it cross-region.
+
+## 19. CDK: "null already exists" on MicroVM image
+
+**Symptom**: `Resource handler returned message: "null already exists"`
+
+**Cause**: A previous failed deployment left an orphaned MicroVM image (retained during rollback). The name is still taken.
+
+**Fix**: Delete the orphaned image manually:
+```bash
+# First terminate any running MicroVMs using that image
+aws lambda-microvms list-microvms --region eu-west-1
+aws lambda-microvms terminate-microvm --microvm-identifier microvm-XXXX --region eu-west-1
+
+# Then delete the image
+aws lambda-microvms delete-microvm-image \
+  --image-identifier arn:aws:lambda:eu-west-1:ACCT:microvm-image:NAME \
+  --region eu-west-1
+```
+
+## 20. CDK stuck at CREATE_IN_PROGRESS (custom resource timeout)
+
+**Symptom**: Stack stuck for 1+ hour on RunMicrovm CREATE_IN_PROGRESS
+
+**Cause**: The custom resource Lambda crashed without sending a response to CloudFormation. CFN waits up to 1 hour for custom resource responses.
+
+**Fix**: Cannot cancel a CREATE_IN_PROGRESS stack. Options:
+1. Wait for the 1-hour timeout
+2. `aws cloudformation delete-stack` (queues delete after timeout)
+3. Fix the Lambda, delete the stuck stack (with `--retain-resources` if DELETE_FAILED), redeploy
 
 ---
 

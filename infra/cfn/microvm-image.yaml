@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda MicroVM image and supporting resources
+
+Parameters:
+  AppName:
+    Type: String
+    AllowedPattern: "^[a-zA-Z0-9-_]+$"
+    Description: Name for the MicroVM image (used in S3 key and image name)
+  ArtifactBucket:
+    Type: String
+    Default: ""
+    Description: Existing S3 bucket for artifacts. If empty, creates a new one.
+  MemoryMiB:
+    Type: Number
+    Default: 4096
+    Description: Minimum memory in MiB for the MicroVM
+
+Conditions:
+  CreateBucket: !Equals [!Ref ArtifactBucket, ""]
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateBucket
+    Properties:
+      BucketName: !Sub "microvm-artifacts-${AWS::AccountId}-${AWS::Region}"
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MicroVMBuildRole-${AppName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: BuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub
+                  - "arn:aws:s3:::${BucketName}/*"
+                  - BucketName: !If [CreateBucket, !Ref Bucket, !Ref ArtifactBucket]
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MicroVMExecRole-${AppName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: ExecPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  MicrovmImage:
+    Type: AWS::Lambda::MicrovmImage
+    DependsOn:
+      - BuildRole
+    Properties:
+      Name: !Ref AppName
+      Description: !Sub "MicroVM image for ${AppName}"
+      BaseImageArn: !Sub "arn:aws:lambda:${AWS::Region}:aws:microvm-image:al2023-1"
+      BaseImageVersion: "0"
+      BuildRoleArn: !GetAtt BuildRole.Arn
+      CodeArtifact:
+        Uri: !Sub
+          - "s3://${BucketName}/images/${AppName}.zip"
+          - BucketName: !If [CreateBucket, !Ref Bucket, !Ref ArtifactBucket]
+      AdditionalOsCapabilities:
+        - ALL
+      CpuConfigurations:
+        - Architecture: ARM_64
+      Resources:
+        - MinimumMemoryInMiB: !Ref MemoryMiB
+      EgressNetworkConnectors: []
+      EnvironmentVariables: []
+      Hooks: {}
+      Logging:
+        CloudWatch: {}
+
+Outputs:
+  ImageArn:
+    Value: !GetAtt MicrovmImage.ImageArn
+    Description: ARN of the built MicroVM image
+  ImageVersion:
+    Value: !GetAtt MicrovmImage.LatestActiveImageVersion
+    Description: Latest active image version
+  BucketName:
+    Value: !If [CreateBucket, !Ref Bucket, !Ref ArtifactBucket]
+    Description: S3 bucket for code artifacts
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn
+    Description: ARN of the MicroVM execution role

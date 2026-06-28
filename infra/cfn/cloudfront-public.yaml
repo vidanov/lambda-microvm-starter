@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFront + Lambda@Edge for public MicroVM access
+
+Parameters:
+  MicrovmId:
+    Type: String
+    Description: The MicroVM identifier (e.g. microvm-78607bb0-f7f3-...)
+  MicrovmEndpoint:
+    Type: String
+    Description: The MicroVM endpoint domain (e.g. xxx.lambda-microvm.eu-west-1.on.aws)
+  AppPort:
+    Type: String
+    Default: "8080"
+    Description: Port your app listens on inside the MicroVM
+  MicrovmRegion:
+    Type: String
+    Default: eu-west-1
+    Description: Region where the MicroVM runs
+
+Resources:
+  EdgeLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "MicroVMEdge-${MicrovmId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EdgePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action: lambda:CreateMicrovmAuthToken
+                Resource: "*"
+
+  EdgeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "microvm-edge-${MicrovmId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 5
+      MemorySize: 256
+      Role: !GetAtt EdgeLambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import json, urllib.request, ssl, time
+          import botocore.session, botocore.auth, botocore.awsrequest
+          MICROVM_ID = "${MicrovmId}"
+          REGION = "${MicrovmRegion}"
+          PORT = "${AppPort}"
+          _c = {"t": None, "e": 0}
+          def get_token():
+              if time.time() < _c["e"] - 120: return _c["t"]
+              s = botocore.session.get_session()
+              cr = s.get_credentials().get_frozen_credentials()
+              url = f"https://lambda.{REGION}.amazonaws.com/2025-09-09/microvms/{MICROVM_ID}/auth-token"
+              b = json.dumps({"expirationInMinutes":60,"allowedPorts":[{"allPorts":{}}]}).encode()
+              r = botocore.awsrequest.AWSRequest(method="POST",url=url,data=b,headers={"Content-Type":"application/json"})
+              botocore.auth.SigV4Auth(cr,"lambda",REGION).add_auth(r)
+              with urllib.request.urlopen(urllib.request.Request(url,data=b,method="POST",headers=dict(r.headers)),context=ssl.create_default_context(),timeout=4) as resp:
+                  _c["t"]=json.loads(resp.read())["authToken"]["X-aws-proxy-auth"]; _c["e"]=time.time()+3600
+              return _c["t"]
+          def handler(event, context):
+              req = event["Records"][0]["cf"]["request"]
+              t = get_token()
+              req["headers"]["x-aws-proxy-auth"]=[{"key":"X-aws-proxy-auth","value":t}]
+              req["headers"]["x-aws-proxy-port"]=[{"key":"X-aws-proxy-port","value":PORT}]
+              return req
+
+  EdgeVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref EdgeFunction
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "MicroVM public access: ${MicrovmId}"
+        Enabled: true
+        Origins:
+          - Id: microvm
+            DomainName: !Ref MicrovmEndpoint
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: microvm
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref EdgeVersion
+              IncludeBody: true
+          Compress: true
+
+Outputs:
+  CloudFrontDomain:
+    Value: !GetAtt Distribution.DomainName
+    Description: Public URL for your MicroVM
+  CloudFrontId:
+    Value: !Ref Distribution
+    Description: CloudFront distribution ID

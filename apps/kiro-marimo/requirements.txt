@@ -1,0 +1,5 @@
+marimo==0.17.6
+boto3
+pandas
+numpy
+litellm

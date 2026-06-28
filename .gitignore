@@ -6,3 +6,5 @@ deploy-output-*.json
 *.zip
 .agents/
 skills-lock.json
+cdk.out/
+

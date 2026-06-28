@@ -1,0 +1,9 @@
+# Bundled dependencies (installed by build.sh before deploy)
+boto3/
+botocore/
+dateutil/
+jmespath/
+s3transfer/
+urllib3/
+six.py
+bin/

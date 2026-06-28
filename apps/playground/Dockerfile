@@ -2,6 +2,7 @@ FROM public.ecr.aws/lambda/microvms:al2023-minimal
 RUN dnf install -y python3 python3-pip && dnf clean all
 RUN python3 -m venv /app/venv
 ENV PATH="/app/venv/bin:$PATH"
+RUN pip install --upgrade pip
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 WORKDIR /app

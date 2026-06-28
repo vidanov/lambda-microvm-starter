@@ -41,10 +41,20 @@ Deploy any web app to an AWS Lambda MicroVM with public access via CloudFront. O
 │   ├── code-runner/         # Sandboxed Python code execution API
 │   ├── pdf-generator/       # HTML-to-PDF conversion service
 │   └── shape-agent/         # AI agent with Shape governance
-├── infra/                   # Infrastructure code (Lambda@Edge, future CDK)
-│   ├── edge-auth/           # Lambda@Edge function (auth token injection)
-│   └── cdk/                 # CDK stack (placeholder for when CFN support lands)
-├── deploy.sh                # Main deploy script
+├── infra/                   # Infrastructure code (Lambda@Edge, CDK, CFN)
+│   ├── cfn/                 # CloudFormation templates
+│   │   ├── microvm-image.yaml      # Image + IAM + S3
+│   │   └── cloudfront-public.yaml  # CloudFront + Lambda@Edge
+│   ├── cdk/                 # CDK stack (MicroVM image, roles, orchestrator)
+│   │   ├── stack.py         # Main CDK stack definition
+│   │   ├── app.py           # CDK app entry point
+│   │   └── orchestrator/    # Custom resource Lambda (runs MicroVM + edge)
+│   │       ├── index.py     # Orchestrator logic
+│   │       ├── cfnresponse.py # CFN response helper
+│   │       └── build.sh     # Install deps before deploy
+│   └── edge-auth/           # Lambda@Edge function (auth token injection)
+├── deploy.sh                # CLI-based deploy (quick iteration)
+├── deploy-cfn.sh            # CloudFormation deploy (production)
 ├── destroy.sh               # Tear down a deployment
 └── TROUBLESHOOTING.md       # Every gotcha and fix
 ```
@@ -252,9 +262,81 @@ These are use cases where MicroVMs have a clear advantage over Lambda functions:
 
 The pattern: if it needs **isolation + state + long runtime**, it's a MicroVM workload. If it's **stateless + short + high-volume**, Lambda functions win.
 
-## Preparing for IaC (CDK/CloudFormation)
+## Infrastructure as Code (CDK/CloudFormation)
 
-Lambda MicroVMs launched June 22, 2026 with API-only support. CloudFormation resource types are expected soon. The `infra/cdk/` directory contains a placeholder stack that manages everything except the MicroVM-specific calls (which use a Custom Resource wrapper). When native CFN support ships, swap the Custom Resource for the native construct.
+Lambda MicroVMs supports AWS CloudFormation and AWS Cloud Development Kit (AWS CDK) from launch. The `AWS::Lambda::MicrovmImage` resource type manages the image build lifecycle. Running MicroVMs (the per-user ephemeral instances) are still launched via API/SDK since they're dynamic runtime resources, not static infrastructure.
+
+### CloudFormation
+
+Two templates, matching the two-phase lifecycle:
+
+1. **`infra/cfn/microvm-image.yaml`** — Image + IAM roles + S3 bucket (static infrastructure)
+2. **`infra/cfn/cloudfront-public.yaml`** — CloudFront + Lambda@Edge (needs a running MicroVM endpoint)
+
+```bash
+# Phase 1: Build the image
+./deploy-cfn.sh apps/playground
+
+# Phase 2: Run a MicroVM, then deploy CloudFront pointing to it
+aws lambda-microvms run-microvm \
+  --image-identifier arn:aws:lambda:eu-west-1:ACCT:microvm-image:playground \
+  --execution-role-arn arn:aws:iam::ACCT:role/MicroVMExecRole-playground \
+  --idle-policy '{"maxIdleDurationSeconds":1800,"suspendedDurationSeconds":28800,"autoResumeEnabled":true}' \
+  --region eu-west-1
+
+aws cloudformation deploy \
+  --template-file infra/cfn/cloudfront-public.yaml \
+  --stack-name microvm-playground-cdn \
+  --parameter-overrides \
+    MicrovmId=microvm-XXXX \
+    MicrovmEndpoint=XXXX.lambda-microvm.eu-west-1.on.aws \
+    AppPort=2718 \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+### CDK
+
+Single stack handles everything including MicroVM lifecycle. One command after initial setup:
+
+```bash
+cd infra/cdk
+pip install aws-cdk-lib constructs
+
+# Build orchestrator dependencies (bundles boto3 + lambda-microvms service model)
+./orchestrator/build.sh
+
+# Upload your app code first
+aws s3 cp app.zip s3://microvm-artifacts-ACCT-eu-west-1/images/playground.zip
+
+# Deploy everything: image build → run MicroVM → CloudFront
+cdk deploy -c app_name=playground -c app_port=2718 --profile YOUR_PROFILE
+```
+
+The stack uses a custom resource (orchestrator Lambda) that:
+1. Calls `RunMicrovm` and waits for RUNNING state
+2. Creates the Lambda@Edge function in us-east-1 (CloudFront requirement)
+3. Bakes the MicroVM ID into the edge function code
+4. Publishes a version and wires it into CloudFront
+
+On `cdk destroy`, the orchestrator terminates the MicroVM and deletes the edge function.
+
+**Key implementation details:**
+- The orchestrator bundles its own boto3 with the `lambda-microvms` service model (not yet in standard SDK)
+- Lambda@Edge functions must be in us-east-1, so the orchestrator creates them cross-region
+- IAM actions use the `lambda:` namespace (e.g., `lambda:RunMicrovm`), not `lambda-microvms:`
+
+### What gets managed by IaC vs. API
+
+| Resource | Managed by | Why |
+|----------|-----------|-----|
+| MicroVM image | CloudFormation/CDK | Static infrastructure, versioned |
+| IAM roles | CloudFormation/CDK | Static infrastructure |
+| S3 artifact bucket | CloudFormation/CDK | Static infrastructure |
+| Running MicroVMs | API/SDK at runtime | Dynamic, per-user, ephemeral |
+| CloudFront distribution | CloudFormation/CDK (optional) | Static infrastructure |
+
+This starter kit includes both paths: `deploy.sh` for quick CLI iteration and `deploy-cfn.sh` / `infra/cdk/` for production deployments.
 
 ## Local development
 
