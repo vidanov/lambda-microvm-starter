@@ -3,17 +3,20 @@
 Usage:
     cd infra/cdk && pip install aws-cdk-lib constructs
 
+    # Build orchestrator dependencies (once)
+    ./orchestrator/build.sh
+
     # Upload app code first
     aws s3 cp app.zip s3://microvm-artifacts-ACCT-eu-west-1/images/playground.zip
 
     # Deploy everything: image build → run MicroVM → CloudFront
-    cdk deploy -c app_name=playground -c app_port=2718
+    cdk deploy -c app_name=playground -c app_port=2718 --profile YOUR_PROFILE
 """
 
 from aws_cdk import (
-    Stack, CfnOutput, CfnResource, Duration, RemovalPolicy, CustomResource, Fn,
+    Stack, CfnOutput, CfnResource, Duration, CustomResource, Fn,
     aws_s3 as s3, aws_iam as iam, aws_lambda as lambda_,
-    aws_cloudfront as cf, aws_cloudfront_origins as origins,
+    aws_cloudfront as cf,
 )
 from constructs import Construct
 import os
